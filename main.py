@@ -29,6 +29,7 @@ generation_status = {}  # Track generation progress
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:8000/auth/callback")
+print(f"Using REDIRECT_URI: {REDIRECT_URI}")
 
 client_config = {
     "web": {
@@ -158,11 +159,11 @@ async def dashboard(request: Request):
                 <div class="col-md-6">
                     <div class="card">
                         <div class="card-body text-center">
-                            <h4>📅 Specific Month</h4>
-                            <p>Generate CSV for one specific month</p>
+                            <h4>📅 Email Collection</h4>
+                            <p>Generate CSV files from selected month to July 2025</p>
                             <div class="row mb-3">
                                 <div class="col-6">
-                                    <label>Month:</label>
+                                    <label>Start Month:</label>
                                     <select id="month" class="form-select">
                                         <option value="12">December</option>
                                         <option value="1">January</option>
@@ -186,7 +187,7 @@ async def dashboard(request: Request):
                                     </select>
                                 </div>
                             </div>
-                            <button id="generateBtn" onclick="startGeneration()" class="btn btn-primary">Generate CSV</button>
+                            <button id="generateBtn" onclick="startGeneration()" class="btn btn-primary">Generate CSV Files</button>
                         </div>
                     </div>
                 </div>
@@ -234,20 +235,34 @@ async def dashboard(request: Request):
                 const month = document.getElementById('month').value;
                 const year = document.getElementById('year').value;
                 
-                // Validate date (no future dates, only Dec 2024+)
-                const currentDate = new Date();
+                // Validate date (only Dec 2024+)
                 const selectedDate = new Date(year, month - 1, 1);
                 const minDate = new Date(2024, 11, 1); // December 2024
-                
-                if (selectedDate > currentDate) {{
-                    alert('Cannot generate CSV for future dates!');
-                    return;
-                }}
+                const endDate = new Date(2025, 6, 31); // July 2025
                 
                 if (selectedDate < minDate) {{
                     alert('Email collection starts from December 2024!');
                     return;
                 }}
+                
+                if (selectedDate > endDate) {{
+                    alert('Start month cannot be after July 2025!');
+                    return;
+                }}
+                
+                // Calculate months from start to July 2025
+                const monthsToProcess = [];
+                let currentMonth = new Date(selectedDate);
+                while (currentMonth <= endDate) {{
+                    monthsToProcess.push({{
+                        month: currentMonth.getMonth() + 1,
+                        year: currentMonth.getFullYear(),
+                        name: currentMonth.toLocaleString('default', {{ month: 'long', year: 'numeric' }})
+                    }});
+                    currentMonth.setMonth(currentMonth.getMonth() + 1);
+                }}
+                
+                console.log(`Will process ${{monthsToProcess.length}} months:`, monthsToProcess);
                 
                 // Hide form, show progress
                 document.getElementById('generateBtn').style.display = 'none';
@@ -279,6 +294,8 @@ async def dashboard(request: Request):
                 }}
             }}
             
+            let downloadedFiles = new Set();
+            
             function startProgressPolling() {{
                 progressInterval = setInterval(async () => {{
                     try {{
@@ -287,9 +304,22 @@ async def dashboard(request: Request):
                         
                         updateProgress(status.progress, status.message);
                         
+                        // Check for new completed files and trigger downloads
+                        if (status.completed_files) {{
+                            for (let i = 0; i < status.completed_files.length; i++) {{
+                                if (!downloadedFiles.has(i)) {{
+                                    downloadedFiles.add(i);
+                                    // Trigger download for this file
+                                    setTimeout(() => {{
+                                        downloadFile(i, status.completed_files[i].filename);
+                                    }}, 500 * i); // Stagger downloads by 500ms
+                                }}
+                            }}
+                        }}
+                        
                         if (status.status === 'completed') {{
                             clearInterval(progressInterval);
-                            showSuccess(status.filename, status.email_count);
+                            showSuccess(status.completed_files.length, status.total_email_count);
                         }} else if (status.status === 'failed') {{
                             clearInterval(progressInterval);
                             showError(status.message);
@@ -300,22 +330,25 @@ async def dashboard(request: Request):
                 }}, 1000); // Poll every second
             }}
             
+            function downloadFile(fileIndex, filename) {{
+                console.log(`Auto-downloading: ${{filename}}`);
+                window.location.href = `/api/download/${{generationId}}?file_index=${{fileIndex}}`;
+            }}
+            
             function updateProgress(percent, message) {{
                 document.getElementById('progressBar').style.width = percent + '%';
                 document.getElementById('progressText').textContent = Math.round(percent) + '%';
                 document.getElementById('statusText').textContent = message;
             }}
             
-            function showSuccess(filename, emailCount) {{
+            function showSuccess(fileCount, totalEmailCount) {{
                 document.getElementById('progressSection').style.display = 'none';
                 document.getElementById('successSection').style.display = 'block';
                 document.getElementById('successMessage').textContent = 
-                    `Successfully processed ${{emailCount}} emails. File: ${{filename}}`;
+                    `Successfully processed ${{totalEmailCount}} emails across ${{fileCount}} CSV files. All files have been automatically downloaded.`;
                 
-                // Set up download button
-                document.getElementById('downloadBtn').onclick = () => {{
-                    window.location.href = `/api/download/${{generationId}}`;
-                }};
+                // Hide download button since files are auto-downloaded
+                document.getElementById('downloadBtn').style.display = 'none';
             }}
             
             function showError(message) {{
@@ -357,17 +390,33 @@ async def start_generation(request: Request):
         # Generate unique ID for this generation task
         generation_id = secrets.token_urlsafe(16)
         
+        # Calculate months from start to July 2025
+        start_date = datetime(year, month, 1)
+        end_date = datetime(2025, 7, 31)  # July 2025
+        months_to_process = []
+        
+        current_month = start_date
+        while current_month <= end_date:
+            months_to_process.append({
+                'month': current_month.month,
+                'year': current_month.year,
+                'name': calendar.month_name[current_month.month]
+            })
+            if current_month.month == 12:
+                current_month = current_month.replace(year=current_month.year + 1, month=1)
+            else:
+                current_month = current_month.replace(month=current_month.month + 1)
+        
         # Initialize status
         generation_status[generation_id] = {
             'status': 'processing',
             'progress': 0,
             'message': 'Starting...',
             'session_id': session_id,
-            'month': month,
-            'year': year,
-            'csv_content': None,
-            'filename': None,
-            'email_count': 0
+            'months_to_process': months_to_process,
+            'current_month_index': 0,
+            'completed_files': [],
+            'total_email_count': 0
         }
         
         # Start background task (we'll implement this next)
@@ -390,36 +439,45 @@ async def get_generation_status(generation_id: str):
         "status": status['status'],
         "progress": status['progress'],
         "message": status['message'],
-        "filename": status.get('filename'),
-        "email_count": status.get('email_count', 0)
+        "completed_files": status.get('completed_files', []),
+        "total_email_count": status.get('total_email_count', 0),
+        "current_month_index": status.get('current_month_index', 0),
+        "months_to_process": status.get('months_to_process', [])
     }
 
 @app.get("/api/download/{generation_id}")
-async def download_csv(generation_id: str):
-    """Download the generated CSV"""
+async def download_csv(generation_id: str, file_index: int = 0):
+    """Download a specific CSV file"""
     if generation_id not in generation_status:
         raise HTTPException(status_code=404, detail="Generation not found")
     
     status = generation_status[generation_id]
-    if status['status'] != 'completed':
-        raise HTTPException(status_code=400, detail="Generation not completed")
+    completed_files = status.get('completed_files', [])
+    
+    if not completed_files:
+        raise HTTPException(status_code=400, detail="No files available")
+    
+    if file_index >= len(completed_files):
+        raise HTTPException(status_code=400, detail="File index out of range")
+    
+    file_info = completed_files[file_index]
     
     return StreamingResponse(
-        io.StringIO(status['csv_content']),
+        io.StringIO(file_info['csv_content']),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={status['filename']}"}
+        headers={"Content-Disposition": f"attachment; filename={file_info['filename']}"}
     )
 
 async def process_emails_background(generation_id: str):
-    """Background task to process emails"""
+    """Background task to process emails for multiple months"""
     try:
         status = generation_status[generation_id]
         session_id = status['session_id']
-        month = status['month']
-        year = status['year']
+        months_to_process = status['months_to_process']
+        total_months = len(months_to_process)
         
         # Update progress
-        status['progress'] = 20
+        status['progress'] = 10
         status['message'] = 'Authenticating with Gmail...'
         
         # Get user session
@@ -442,145 +500,58 @@ async def process_emails_background(generation_id: str):
             credentials.refresh(GoogleRequest())
         
         # Build Gmail service
-        status['progress'] = 30
+        status['progress'] = 15
         status['message'] = 'Connecting to Gmail API...'
         service = build('gmail', 'v1', credentials=credentials)
-        
-        print(f"Processing emails for {month}/{year} - User ID: 'me'")
         
         # Test connection
         profile = service.users().getProfile(userId='me').execute()
         print(f"Connected to Gmail for: {profile['emailAddress']}")
         
-        # Date range for month
-        start_date = date(year, month, 1)
-        if month == 12:
-            end_date = date(year + 1, 1, 1)
-        else:
-            end_date = date(year, month + 1, 1)
-        
-        # Search sent emails
-        query = f"in:sent after:{start_date.strftime('%Y/%m/%d')} before:{end_date.strftime('%Y/%m/%d')}"
-        print(f"Gmail API Query: {query}")
-        
-        status['progress'] = 40
-        status['message'] = f'Searching emails for {calendar.month_name[month]} {year}...'
-        
-        # Get all messages with pagination
-        all_messages = []
-        page_token = None
-        page_count = 0
-        
-        while True:
-            page_count += 1
-            status['progress'] = 40 + min(page_count * 5, 20)  # Progress 40-60% for fetching
-            status['message'] = f'Fetching message list (page {page_count})...'
+        # Process each month
+        for month_index, month_info in enumerate(months_to_process):
+            current_month = month_info['month']
+            current_year = month_info['year']
+            month_name = month_info['name']
             
-            request_params = {
-                'userId': 'me',
-                'q': query,
-                'maxResults': 500  # Use maximum allowed
-            }
-            if page_token:
-                request_params['pageToken'] = page_token
+            # Update progress for current month
+            base_progress = 20 + (month_index / total_months) * 70
+            status['progress'] = base_progress
+            status['message'] = f'Processing {month_name} {current_year}...'
+            status['current_month_index'] = month_index
             
-            try:
-                messages_result = service.users().messages().list(**request_params).execute()
-                messages = messages_result.get('messages', [])
-            except HttpError as e:
-                if e.resp.status == 429:  # Rate limit exceeded
-                    print(f"Rate limit hit, waiting 60 seconds...")
-                    status['message'] = 'Rate limit reached, waiting 60 seconds...'
-                    await asyncio.sleep(60)
-                    continue
-                elif e.resp.status == 403:  # Quota exceeded
-                    print(f"Quota exceeded: {e}")
-                    status['status'] = 'failed'
-                    status['message'] = 'Gmail API quota exceeded. Please try again later.'
-                    return
-                else:
-                    print(f"Gmail API error: {e}")
-                    status['status'] = 'failed'
-                    status['message'] = f'Gmail API error: {str(e)}'
-                    return
+            print(f"Processing emails for {current_month}/{current_year}")
             
-            if not messages:
-                break
+            # Process this month
+            month_emails = await process_single_month(service, current_month, current_year, status, base_progress)
             
-            all_messages.extend(messages)
-            print(f"Fetched page {page_count}: {len(messages)} messages (total: {len(all_messages)})")
-            
-            page_token = messages_result.get('nextPageToken')
-            if not page_token:
-                break
-            
-            # Small delay between API calls
-            await asyncio.sleep(0.1)
+            if month_emails:
+                # Create CSV for this month
+                csv_content = create_csv_content(month_emails)
+                filename = f"{user_data['email'].split('@')[0]}_{month_name.lower()}_{current_year}.csv"
+                
+                # Store completed file
+                file_info = {
+                    'filename': filename,
+                    'csv_content': csv_content,
+                    'email_count': len(month_emails),
+                    'month': current_month,
+                    'year': current_year,
+                    'month_name': month_name
+                }
+                status['completed_files'].append(file_info)
+                status['total_email_count'] += len(month_emails)
+                
+                print(f"Completed {month_name} {current_year}: {len(month_emails)} emails")
+            else:
+                print(f"No emails found for {month_name} {current_year}")
         
-        print(f"Total messages found: {len(all_messages)}")
-        
-        if not all_messages:
-            status['status'] = 'completed'
-            status['progress'] = 100
-            status['message'] = 'No emails found for this period'
-            status['email_count'] = 0
-            status['csv_content'] = 'sent_date,recipient_name,recipient_email,thread_id,message_id\\n'
-            status['filename'] = f"{user_data['email'].split('@')[0]}_{calendar.month_name[month].lower()}.csv"
-            return
-        
-        # Process messages
-        all_emails = []
-        total_messages = len(all_messages)
-        
-        for i, message in enumerate(all_messages):
-            status['progress'] = 60 + (i / total_messages) * 30  # Progress 60-90% for processing
-            status['message'] = f'Processing email {i+1} of {total_messages}...'
-            
-            try:
-                email_data = get_email_details(service, message['id'])
-                if email_data:
-                    all_emails.append(email_data)
-            except HttpError as e:
-                if e.resp.status == 429:  # Rate limit exceeded
-                    print(f"Rate limit hit while processing message, waiting 30 seconds...")
-                    status['message'] = f'Rate limit reached, waiting... ({i+1}/{total_messages})'
-                    await asyncio.sleep(30)
-                    # Retry the same message
-                    try:
-                        email_data = get_email_details(service, message['id'])
-                        if email_data:
-                            all_emails.append(email_data)
-                    except:
-                        print(f"Failed to process message {message['id']} after retry")
-                elif e.resp.status == 403:  # Quota exceeded
-                    print(f"Quota exceeded while processing messages")
-                    status['status'] = 'failed'
-                    status['message'] = 'Gmail API quota exceeded during processing. Please try again later.'
-                    return
-                else:
-                    print(f"Error processing message {message['id']}: {e}")
-            except Exception as e:
-                print(f"Unexpected error processing message {message['id']}: {e}")
-            
-            # Small delay to avoid rate limiting
-            await asyncio.sleep(0.05)  # Reduced delay since we're doing more requests
-        
-        # Generate CSV
-        status['progress'] = 95
-        status['message'] = 'Generating CSV...'
-        
-        csv_content = create_csv_content(all_emails)
-        filename = f"{user_data['email'].split('@')[0]}_{calendar.month_name[month].lower()}.csv"
-        
-        # Complete
+        # Mark as completed
         status['status'] = 'completed'
         status['progress'] = 100
-        status['message'] = f'Completed! Generated CSV with {len(all_emails)} emails.'
-        status['csv_content'] = csv_content
-        status['filename'] = filename
-        status['email_count'] = len(all_emails)
+        status['message'] = f'Completed! Generated {len(status["completed_files"])} CSV files with {status["total_email_count"]} total emails.'
         
-        print(f"Successfully generated CSV with {len(all_emails)} emails")
+        print(f"Successfully generated {len(status['completed_files'])} CSV files")
         
     except Exception as e:
         print(f"Background processing error: {e}")
@@ -618,6 +589,10 @@ def get_email_details(service, message_id):
         except:
             sent_date = datetime.now().strftime('%m/%d/%Y %H:%M:%S')
         
+        # Filter out loopwork.co domain emails
+        if recipient_email.lower().endswith('@loopwork.co'):
+            return None  # Skip this email
+        
         # Get thread ID and message ID
         thread_id = message.get('threadId', '')
         message_id = message.get('id', '')
@@ -645,6 +620,111 @@ def create_csv_content(emails):
         writer.writerow([email_data['sent_date'], email_data['recipient_name'], email_data['recipient_email'], email_data['thread_id'], email_data['message_id']])
     
     return output.getvalue()
+
+async def process_single_month(service, month, year, status, base_progress):
+    """Process emails for a single month"""
+    try:
+        # Date range for month
+        start_date = date(year, month, 1)
+        if month == 12:
+            end_date = date(year + 1, 1, 1)
+        else:
+            end_date = date(year, month + 1, 1)
+        
+        # Search sent emails
+        query = f"in:sent after:{start_date.strftime('%Y/%m/%d')} before:{end_date.strftime('%Y/%m/%d')}"
+        print(f"Gmail API Query: {query}")
+        
+        # Get all messages with pagination
+        all_messages = []
+        page_token = None
+        page_count = 0
+        
+        while True:
+            page_count += 1
+            status['message'] = f'Fetching {calendar.month_name[month]} {year} emails (page {page_count})...'
+            
+            request_params = {
+                'userId': 'me',
+                'q': query,
+                'maxResults': 500
+            }
+            if page_token:
+                request_params['pageToken'] = page_token
+            
+            try:
+                messages_result = service.users().messages().list(**request_params).execute()
+                messages = messages_result.get('messages', [])
+            except HttpError as e:
+                if e.resp.status == 429:
+                    print(f"Rate limit hit, waiting 60 seconds...")
+                    status['message'] = f'Rate limit reached, waiting... ({calendar.month_name[month]} {year})'
+                    await asyncio.sleep(60)
+                    continue
+                elif e.resp.status == 403:
+                    print(f"Quota exceeded: {e}")
+                    return None
+                else:
+                    print(f"Gmail API error: {e}")
+                    return None
+            
+            if not messages:
+                break
+            
+            all_messages.extend(messages)
+            print(f"Fetched page {page_count}: {len(messages)} messages (total: {len(all_messages)})")
+            
+            page_token = messages_result.get('nextPageToken')
+            if not page_token:
+                break
+            
+            await asyncio.sleep(0.1)
+        
+        print(f"Total messages found for {calendar.month_name[month]} {year}: {len(all_messages)}")
+        
+        if not all_messages:
+            return []
+        
+        # Process messages
+        all_emails = []
+        total_messages = len(all_messages)
+        
+        for i, message in enumerate(all_messages):
+            if i % 10 == 0:  # Update progress every 10 emails
+                progress = base_progress + (i / total_messages) * (70 / len(status['months_to_process']))
+                status['progress'] = min(progress, 90)
+                status['message'] = f'Processing {calendar.month_name[month]} {year} email {i+1} of {total_messages}...'
+            
+            try:
+                email_data = get_email_details(service, message['id'])
+                if email_data:
+                    all_emails.append(email_data)
+            except HttpError as e:
+                if e.resp.status == 429:
+                    print(f"Rate limit hit while processing message, waiting 30 seconds...")
+                    await asyncio.sleep(30)
+                    try:
+                        email_data = get_email_details(service, message['id'])
+                        if email_data:
+                            all_emails.append(email_data)
+                    except:
+                        print(f"Failed to process message {message['id']} after retry")
+                elif e.resp.status == 403:
+                    print(f"Quota exceeded while processing messages")
+                    return all_emails  # Return what we have so far
+                else:
+                    print(f"Error processing message {message['id']}: {e}")
+            except Exception as e:
+                print(f"Unexpected error processing message {message['id']}: {e}")
+            
+            await asyncio.sleep(0.05)
+        
+        return all_emails
+        
+    except Exception as e:
+        print(f"Error processing month {month}/{year}: {e}")
+        return []
+
 
 if __name__ == "__main__":
     import uvicorn
