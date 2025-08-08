@@ -5,7 +5,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta
 import secrets
 import email
 import csv
@@ -159,12 +159,12 @@ async def dashboard(request: Request):
                 <div class="col-md-6">
                     <div class="card">
                         <div class="card-body text-center">
-                            <h4>📅 Email Collection</h4>
-                            <p>Generate CSV files from selected month to July 2025</p>
+                            <h4>📅 Single Month</h4>
+                            <p>Generate CSV for one specific month only</p>
                             <div class="row mb-3">
                                 <div class="col-6">
-                                    <label>Start Month:</label>
-                                    <select id="month" class="form-select">
+                                    <label>Month:</label>
+                                    <select id="singleMonth" class="form-select">
                                         <option value="12">December</option>
                                         <option value="1">January</option>
                                         <option value="2">February</option>
@@ -181,13 +181,49 @@ async def dashboard(request: Request):
                                 </div>
                                 <div class="col-6">
                                     <label>Year:</label>
-                                    <select id="year" class="form-select">
+                                    <select id="singleYear" class="form-select">
                                         <option value="2024">2024</option>
                                         <option value="2025">2025</option>
                                     </select>
                                 </div>
                             </div>
-                            <button id="generateBtn" onclick="startGeneration()" class="btn btn-primary">Generate CSV Files</button>
+                            <button id="singleBtn" onclick="startSingleMonthGeneration()" class="btn btn-success">Generate Single CSV</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-body text-center">
+                            <h4>📚 Multiple Months</h4>
+                            <p>Generate single CSV file with all emails from selected month to July 2025</p>
+                            <div class="row mb-3">
+                                <div class="col-6">
+                                    <label>Start Month:</label>
+                                    <select id="multiMonth" class="form-select">
+                                        <option value="12">December</option>
+                                        <option value="1">January</option>
+                                        <option value="2">February</option>
+                                        <option value="3">March</option>
+                                        <option value="4">April</option>
+                                        <option value="5">May</option>
+                                        <option value="6">June</option>
+                                        <option value="7">July</option>
+                                        <option value="8">August</option>
+                                        <option value="9">September</option>
+                                        <option value="10">October</option>
+                                        <option value="11">November</option>
+                                    </select>
+                                </div>
+                                <div class="col-6">
+                                    <label>Year:</label>
+                                    <select id="multiYear" class="form-select">
+                                        <option value="2024">2024</option>
+                                        <option value="2025">2025</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <button id="multiBtn" onclick="startMultiMonthGeneration()" class="btn btn-primary">Generate Combined CSV</button>
                         </div>
                     </div>
                 </div>
@@ -231,9 +267,61 @@ async def dashboard(request: Request):
             let generationId = null;
             let progressInterval = null;
             
-            async function startGeneration() {{
-                const month = document.getElementById('month').value;
-                const year = document.getElementById('year').value;
+            async function startSingleMonthGeneration() {{
+                const month = document.getElementById('singleMonth').value;
+                const year = document.getElementById('singleYear').value;
+                
+                // Validate date (only Dec 2024+)
+                const selectedDate = new Date(year, month - 1, 1);
+                const minDate = new Date(2024, 11, 1); // December 2024
+                const maxDate = new Date(2025, 6, 31); // July 2025
+                
+                if (selectedDate < minDate) {{
+                    alert('Email collection starts from December 2024!');
+                    return;
+                }}
+                
+                if (selectedDate > maxDate) {{
+                    alert('Email collection only available up to July 2025!');
+                    return;
+                }}
+                
+                // Hide buttons, show progress
+                document.getElementById('singleBtn').style.display = 'none';
+                document.getElementById('multiBtn').style.display = 'none';
+                document.getElementById('progressSection').style.display = 'block';
+                document.getElementById('successSection').style.display = 'none';
+                
+                try {{
+                    updateProgress(10, 'Starting single month email collection...');
+                    
+                    const response = await fetch('/api/start-generation', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify({{
+                            month: parseInt(month), 
+                            year: parseInt(year),
+                            mode: 'single'
+                        }})
+                    }});
+                    
+                    if (!response.ok) {{
+                        throw new Error('Failed to start generation');
+                    }}
+                    
+                    const data = await response.json();
+                    generationId = data.generation_id;
+                    
+                    startProgressPolling();
+                    
+                }} catch (error) {{
+                    showError('Failed to start generation: ' + error.message);
+                }}
+            }}
+            
+            async function startMultiMonthGeneration() {{
+                const month = document.getElementById('multiMonth').value;
+                const year = document.getElementById('multiYear').value;
                 
                 // Validate date (only Dec 2024+)
                 const selectedDate = new Date(year, month - 1, 1);
@@ -264,19 +352,24 @@ async def dashboard(request: Request):
                 
                 console.log(`Will process ${{monthsToProcess.length}} months:`, monthsToProcess);
                 
-                // Hide form, show progress
-                document.getElementById('generateBtn').style.display = 'none';
+                // Hide buttons, show progress
+                document.getElementById('singleBtn').style.display = 'none';
+                document.getElementById('multiBtn').style.display = 'none';
                 document.getElementById('progressSection').style.display = 'block';
                 document.getElementById('successSection').style.display = 'none';
                 
                 try {{
                     // Start generation process
-                    updateProgress(10, 'Starting email collection...');
+                    updateProgress(10, 'Starting multi-month email collection...');
                     
                     const response = await fetch('/api/start-generation', {{
                         method: 'POST',
                         headers: {{'Content-Type': 'application/json'}},
-                        body: JSON.stringify({{month: parseInt(month), year: parseInt(year)}})
+                        body: JSON.stringify({{
+                            month: parseInt(month), 
+                            year: parseInt(year),
+                            mode: 'multi'
+                        }})
                     }});
                     
                     if (!response.ok) {{
@@ -304,22 +397,32 @@ async def dashboard(request: Request):
                         
                         updateProgress(status.progress, status.message);
                         
-                        // Check for new completed files and trigger downloads
-                        if (status.completed_files) {{
-                            for (let i = 0; i < status.completed_files.length; i++) {{
-                                if (!downloadedFiles.has(i)) {{
-                                    downloadedFiles.add(i);
-                                    // Trigger download for this file
-                                    setTimeout(() => {{
-                                        downloadFile(i, status.completed_files[i].filename);
-                                    }}, 500 * i); // Stagger downloads by 500ms
-                                }}
+                        // Handle downloads based on mode
+                        if (status.mode === 'single') {{
+                            // Single file download when complete
+                            if (status.status === 'completed' && status.completed_files && status.completed_files.length > 0) {{
+                                clearInterval(progressInterval);
+                                showSuccess(1, status.total_email_count);
+                                // Auto-download the single file
+                                setTimeout(() => {{
+                                    downloadFile(0, status.completed_files[0].filename);
+                                }}, 500);
+                            }}
+                        }} else {{
+                            // Multi-month mode - single combined file when complete
+                            if (status.status === 'completed' && status.completed_files && status.completed_files.length > 0) {{
+                                clearInterval(progressInterval);
+                                showSuccess(1, status.total_email_count);
+                                // Auto-download the combined file
+                                setTimeout(() => {{
+                                    downloadFile(0, status.completed_files[0].filename);
+                                }}, 500);
                             }}
                         }}
                         
-                        if (status.status === 'completed') {{
+                        if (status.status === 'completed' && (!status.completed_files || status.completed_files.length === 0)) {{
                             clearInterval(progressInterval);
-                            showSuccess(status.completed_files.length, status.total_email_count);
+                            showSuccess(0, 0);
                         }} else if (status.status === 'failed') {{
                             clearInterval(progressInterval);
                             showError(status.message);
@@ -345,7 +448,7 @@ async def dashboard(request: Request):
                 document.getElementById('progressSection').style.display = 'none';
                 document.getElementById('successSection').style.display = 'block';
                 document.getElementById('successMessage').textContent = 
-                    `Successfully processed ${{totalEmailCount}} emails across ${{fileCount}} CSV files. All files have been automatically downloaded.`;
+                    `Successfully processed ${{totalEmailCount}} emails in ${{fileCount}} CSV file. File has been automatically downloaded.`;
                 
                 // Hide download button since files are auto-downloaded
                 document.getElementById('downloadBtn').style.display = 'none';
@@ -353,13 +456,15 @@ async def dashboard(request: Request):
             
             function showError(message) {{
                 document.getElementById('progressSection').style.display = 'none';
-                document.getElementById('generateBtn').style.display = 'block';
+                document.getElementById('singleBtn').style.display = 'block';
+                document.getElementById('multiBtn').style.display = 'block';
                 alert('Error: ' + message);
             }}
             
             function resetForm() {{
                 document.getElementById('successSection').style.display = 'none';
-                document.getElementById('generateBtn').style.display = 'block';
+                document.getElementById('singleBtn').style.display = 'block';
+                document.getElementById('multiBtn').style.display = 'block';
                 generationId = null;
             }}
             
@@ -386,26 +491,36 @@ async def start_generation(request: Request):
         data = await request.json()
         month = data['month']
         year = data['year']
+        mode = data.get('mode', 'multi')  # Default to multi for backward compatibility
         
         # Generate unique ID for this generation task
         generation_id = secrets.token_urlsafe(16)
         
-        # Calculate months from start to July 2025
-        start_date = datetime(year, month, 1)
-        end_date = datetime(2025, 7, 31)  # July 2025
-        months_to_process = []
-        
-        current_month = start_date
-        while current_month <= end_date:
-            months_to_process.append({
-                'month': current_month.month,
-                'year': current_month.year,
-                'name': calendar.month_name[current_month.month]
-            })
-            if current_month.month == 12:
-                current_month = current_month.replace(year=current_month.year + 1, month=1)
-            else:
-                current_month = current_month.replace(month=current_month.month + 1)
+        # Calculate months to process based on mode
+        if mode == 'single':
+            # Single month only
+            months_to_process = [{
+                'month': month,
+                'year': year,
+                'name': calendar.month_name[month]
+            }]
+        else:
+            # Multiple months from start to July 2025
+            start_date = datetime(year, month, 1)
+            end_date = datetime(2025, 7, 31)  # July 2025
+            months_to_process = []
+            
+            current_month = start_date
+            while current_month <= end_date:
+                months_to_process.append({
+                    'month': current_month.month,
+                    'year': current_month.year,
+                    'name': calendar.month_name[current_month.month]
+                })
+                if current_month.month == 12:
+                    current_month = current_month.replace(year=current_month.year + 1, month=1)
+                else:
+                    current_month = current_month.replace(month=current_month.month + 1)
         
         # Initialize status
         generation_status[generation_id] = {
@@ -416,7 +531,8 @@ async def start_generation(request: Request):
             'months_to_process': months_to_process,
             'current_month_index': 0,
             'completed_files': [],
-            'total_email_count': 0
+            'total_email_count': 0,
+            'mode': mode
         }
         
         # Start background task (we'll implement this next)
@@ -442,7 +558,8 @@ async def get_generation_status(generation_id: str):
         "completed_files": status.get('completed_files', []),
         "total_email_count": status.get('total_email_count', 0),
         "current_month_index": status.get('current_month_index', 0),
-        "months_to_process": status.get('months_to_process', [])
+        "months_to_process": status.get('months_to_process', []),
+        "mode": status.get('mode', 'multi')
     }
 
 @app.get("/api/download/{generation_id}")
@@ -508,22 +625,22 @@ async def process_emails_background(generation_id: str):
         profile = service.users().getProfile(userId='me').execute()
         print(f"Connected to Gmail for: {profile['emailAddress']}")
         
-        # Process each month
-        for month_index, month_info in enumerate(months_to_process):
+        mode = status.get('mode', 'multi')
+        
+        if mode == 'single':
+            # Single month processing
+            month_info = months_to_process[0]
             current_month = month_info['month']
             current_year = month_info['year']
             month_name = month_info['name']
             
-            # Update progress for current month
-            base_progress = 20 + (month_index / total_months) * 70
-            status['progress'] = base_progress
+            status['progress'] = 20
             status['message'] = f'Processing {month_name} {current_year}...'
-            status['current_month_index'] = month_index
             
             print(f"Processing emails for {current_month}/{current_year}")
             
             # Process this month
-            month_emails = await process_single_month(service, current_month, current_year, status, base_progress)
+            month_emails = await process_single_month(service, current_month, current_year, status, 20)
             
             if month_emails:
                 # Create CSV for this month
@@ -540,11 +657,60 @@ async def process_emails_background(generation_id: str):
                     'month_name': month_name
                 }
                 status['completed_files'].append(file_info)
-                status['total_email_count'] += len(month_emails)
+                status['total_email_count'] = len(month_emails)
                 
                 print(f"Completed {month_name} {current_year}: {len(month_emails)} emails")
-            else:
-                print(f"No emails found for {month_name} {current_year}")
+            
+        else:
+            # Multi-month processing - combine all emails into single file
+            all_emails = []
+            
+            for month_index, month_info in enumerate(months_to_process):
+                current_month = month_info['month']
+                current_year = month_info['year']
+                month_name = month_info['name']
+                
+                # Update progress for current month
+                base_progress = 20 + (month_index / total_months) * 70
+                status['progress'] = base_progress
+                status['message'] = f'Processing {month_name} {current_year}...'
+                status['current_month_index'] = month_index
+                
+                print(f"Processing emails for {current_month}/{current_year}")
+                
+                # Process this month
+                month_emails = await process_single_month(service, current_month, current_year, status, base_progress)
+                
+                if month_emails:
+                    all_emails.extend(month_emails)
+                    print(f"Completed {month_name} {current_year}: {len(month_emails)} emails")
+                else:
+                    print(f"No emails found for {month_name} {current_year}")
+            
+            # Create single combined CSV file
+            if all_emails:
+                csv_content = create_csv_content(all_emails)
+                start_month = calendar.month_name[months_to_process[0]['month']].lower()
+                start_year = months_to_process[0]['year']
+                end_month = calendar.month_name[months_to_process[-1]['month']].lower()
+                end_year = months_to_process[-1]['year']
+                
+                if len(months_to_process) == 1:
+                    filename = f"{user_data['email'].split('@')[0]}_{start_month}_{start_year}.csv"
+                else:
+                    filename = f"{user_data['email'].split('@')[0]}_{start_month}_{start_year}_to_{end_month}_{end_year}.csv"
+                
+                # Store combined file
+                file_info = {
+                    'filename': filename,
+                    'csv_content': csv_content,
+                    'email_count': len(all_emails),
+                    'months_included': len(months_to_process)
+                }
+                status['completed_files'].append(file_info)
+                status['total_email_count'] = len(all_emails)
+                
+                print(f"Created combined CSV with {len(all_emails)} emails from {len(months_to_process)} months")
         
         # Mark as completed
         status['status'] = 'completed'
@@ -566,9 +732,8 @@ def get_email_details(service, message_id):
         headers = message['payload'].get('headers', [])
         
         to_header = next((h['value'] for h in headers if h['name'] == 'To'), '')
-        date_header = next((h['value'] for h in headers if h['name'] == 'Date'), '')
         
-        if not to_header or not date_header:
+        if not to_header:
             return None
         
         # Parse recipient (handle first recipient if multiple)
@@ -582,12 +747,25 @@ def get_email_details(service, message_id):
             recipient_email = first_recipient.strip()
             recipient_name = recipient_email
         
-        # Parse date
+        # Use internalDate for consistent timezone handling
         try:
-            dt = email.utils.parsedate_to_datetime(date_header)
-            sent_date = dt.strftime('%m/%d/%Y %H:%M:%S')
-        except:
-            sent_date = datetime.now().strftime('%m/%d/%Y %H:%M:%S')
+            # Get internalDate (milliseconds since epoch) from Gmail API
+            internal_date_ms = message.get('internalDate')
+            if not internal_date_ms:
+                return None
+            
+            # Convert to datetime in UTC
+            dt_utc = datetime.fromtimestamp(int(internal_date_ms) / 1000, tz=timezone.utc)
+            
+            # Convert to IST (UTC + 5:30)
+            ist_tz = timezone(timedelta(hours=5, minutes=30))
+            dt_ist = dt_utc.astimezone(ist_tz)
+            
+            # Format without timezone label (already converted to IST)
+            sent_date = dt_ist.strftime('%d/%m/%Y %H:%M:%S')
+        except Exception as e:
+            print(f"Error parsing internalDate for message {message_id}: {e}")
+            return None
         
         # Filter out loopwork.co domain emails
         if recipient_email.lower().endswith('@loopwork.co'):
